@@ -41,19 +41,22 @@ std::deque<cv::Point2i> leftRelativePoints; // relative to eye region
 std::deque<cv::Point2i> rightRelativePoints; // relative to eye region
 std::deque<cv::Point2f> normalPoints; // normalized
 
-enum POSITIONS {
+enum ACTIONS {
   LEFT,
   RIGHT,
   CENTER,
   UP,
-  DOWN
+  DOWN,
+  OK,
+  HOME,
+  BACK
 };
 
 int region(cv::Point2f p) {
   if (p.x < -0.9) {
-    return RIGHT;
-  } else if (p.x > 0.9) {
     return LEFT;
+  } else if (p.x > 0.9) {
+    return RIGHT;
   } else if (p.y < -0.9) {
     return UP;
   } else if (p.y > 0.9) {
@@ -79,21 +82,67 @@ bool canFireEvent() {
   return currentTime - lastEventMs > 1000; // it's been more than X milliseconds since last event
 }
 
-void fireEvent(int region) {
-    if (region == LEFT) {
+void systemCurl(std::string key) {
+  std::string cmd = "curl -d '' http://10.30.62.217:8060/keypress/" + key;
+  std::cout << "curl: " << cmd.c_str() << std::endl;
+  system(cmd.c_str());
+}
+
+void fireEvent(int action) {
+    if (action == LEFT) {
       std::cout << "go left" << std::endl;
-    } else if (region == RIGHT) {
+      systemCurl("left");
+    } else if (action == RIGHT) {
       std::cout << "go right!" << std::endl;
-    } else if (region == UP) {
+      systemCurl("right");
+    } else if (action == UP) {
       std::cout << "go up!" << std::endl;
-    } else if (region == DOWN) {
+      systemCurl("up");
+    } else if (action == DOWN) {
       std::cout << "go down!" << std::endl;
+      systemCurl("down");
+    } else if (action == OK) {
+      std::cout << "ok!" << std::endl;
+      systemCurl("select");
+    } else if (action == BACK) {
+      std::cout << "back!" << std::endl;
+      systemCurl("back");
+    } else if (action == HOME) {
+      systemCurl("home");
     }
 
   // save off for thresholding
   lastEventMs = getEpochMilliseconds();
   hasFiredEvent = true;
 }
+
+long lastBlinkStart;
+bool currentlyBlinking = false;
+void eyesClosed()
+{
+  if (!currentlyBlinking) { // first occurrence of blink, start timer
+    lastBlinkStart = getEpochMilliseconds();
+  }
+
+  currentlyBlinking = true;
+}
+
+void eyesOpened()
+{
+  if (currentlyBlinking) {
+    long closedDurationMs = getEpochMilliseconds() - lastBlinkStart;
+    if (closedDurationMs > 8000) {
+      fireEvent(HOME);
+    } else if (closedDurationMs > 3000) {
+      fireEvent(BACK);
+    } else if (closedDurationMs > 1000) {
+      fireEvent(OK);
+    }
+  }
+
+  currentlyBlinking = false;
+}
+
 
 void findKeyEvent(std::deque<cv::Point2f> points)
 {
@@ -269,38 +318,45 @@ void findEyes(cv::Mat frame_gray, cv::Rect face) {
   rightRelativePoints.push_back(rightPupil);
 
   if (leftRelativePoints.size() > 24) {
-    // these are magic ratios of where the pupils fall in the boxes
-    cv::Point2f eyeCenter(0.5 * (leftEyeRegion.x + rightEyeRegion.x + rightEyeRegion.width),
-                          leftLeftCornerRegion.y + 0.6 * leftLeftCornerRegion.height);
+    // blink
+    if (leftPupil.y < leftLeftCornerRegion.y && rightPupil.y < rightLeftCornerRegion.y) {
+      eyesClosed();
+    } else if (leftPupil.y > leftLeftCornerRegion.y && rightPupil.y > rightLeftCornerRegion.y) {
+      eyesOpened();
 
-    cv::Point2f currentRelativeCenter((leftPupil.x + rightPupil.x) * 0.5, 
-                              (leftPupil.y + rightPupil.y) * 0.5);
+      // these are magic ratios of where the pupils fall in the boxes
+      cv::Point2f eyeCenter(0.5 * (leftEyeRegion.x + rightEyeRegion.x + rightEyeRegion.width),
+                            leftLeftCornerRegion.y + 0.5 * leftLeftCornerRegion.height);
 
-    const float pixelsToNormal = leftLeftCornerRegion.height / 4.0f;
-    cv::Point2f currentNormalCenter((currentRelativeCenter.x - eyeCenter.x) / pixelsToNormal,
-                                    (currentRelativeCenter.y - eyeCenter.y) / pixelsToNormal);
-    //std::cout << currentNormalCenter << std::endl;                                    
-    // cv::Point2f leftNormalPoint = cv::Point2f((leftPupil.x - avgLeft.x) / EYE_TO_PUPIL,
-    //                                             (leftPupil.y - avgLeft.y) / EYE_TO_PUPIL);
-    normalPoints.push_back(currentNormalCenter);
-  //  std::cout << leftNormalPoint << std::endl;
+      cv::Point2f currentRelativeCenter((leftPupil.x + rightPupil.x) * 0.5, 
+                                (leftPupil.y + rightPupil.y) * 0.5);
 
-    findKeyEvent(normalPoints);
+      const float pixelsToNormal = leftLeftCornerRegion.height / 4.0f;
+      cv::Point2f currentNormalCenter((currentRelativeCenter.x - eyeCenter.x) / pixelsToNormal,
+                                      (currentRelativeCenter.y - eyeCenter.y) / pixelsToNormal);
+      //std::cout << currentNormalCenter << std::endl;                                    
+      // cv::Point2f leftNormalPoint = cv::Point2f((leftPupil.x - avgLeft.x) / EYE_TO_PUPIL,
+      //                                             (leftPupil.y - avgLeft.y) / EYE_TO_PUPIL);
+      normalPoints.push_back(currentNormalCenter);
+    //  std::cout << leftNormalPoint << std::endl;
 
-    // make sure queues don't grow too big
-    while (leftRelativePoints.size() > MAX_QUEUED_POINTS) {
-      leftRelativePoints.pop_front();
+      findKeyEvent(normalPoints);
+
+      // make sure queues don't grow too big
+      while (leftRelativePoints.size() > MAX_QUEUED_POINTS) {
+        leftRelativePoints.pop_front();
+      }
+      while (rightRelativePoints.size() > MAX_QUEUED_POINTS) {
+        rightRelativePoints.pop_front();
+      }
+      while (normalPoints.size() > MAX_QUEUED_POINTS) {
+        normalPoints.pop_front();
+      }
+
+      // draw average left eye position
+      circle(debugFace, eyeCenter, 5, 1234, 2);
+      circle(debugFace, currentRelativeCenter, 3, 234);
     }
-    while (rightRelativePoints.size() > MAX_QUEUED_POINTS) {
-      rightRelativePoints.pop_front();
-    }
-    while (normalPoints.size() > MAX_QUEUED_POINTS) {
-      normalPoints.pop_front();
-    }
-
-    // draw average left eye position
-    circle(debugFace, eyeCenter, 5, 1234, 2);
-    circle(debugFace, currentRelativeCenter, 3, 234);
   }
 
   //-- Find Eye Corners
