@@ -6,6 +6,7 @@
 #include <queue>
 #include <stdio.h>
 #include <math.h>
+#include <sys/time.h>
 
 #include "constants.h"
 #include "findEyeCenter.h"
@@ -21,7 +22,8 @@
 
 
 /** Constants **/
-
+const int MAX_QUEUED_POINTS = 1000;
+const int POINT_SEARCH_RANGE = 20;
 
 /** Function Headers */
 void detectAndDisplay( cv::Mat frame );
@@ -35,6 +37,103 @@ std::string face_window_name = "Capture - Face";
 cv::RNG rng(12345);
 cv::Mat debugImage;
 cv::Mat skinCrCbHist = cv::Mat::zeros(cv::Size(256, 256), CV_8UC1);
+std::deque<cv::Point2i> leftRelativePoints; // relative to eye region
+std::deque<cv::Point2i> rightRelativePoints; // relative to eye region
+std::deque<cv::Point2f> normalPoints; // normalized
+
+enum POSITIONS {
+  LEFT,
+  RIGHT,
+  CENTER,
+  UP,
+  DOWN
+};
+
+int region(cv::Point2f p) {
+  if (p.x < -0.9) {
+    return RIGHT;
+  } else if (p.x > 0.9) {
+    return LEFT;
+  } else if (p.y < -0.9) {
+    return UP;
+  } else if (p.y > 0.9) {
+    return DOWN;
+  } else {
+    return CENTER;
+  }
+}
+
+long getEpochMilliseconds() {
+  struct timeval tp;
+  gettimeofday(&tp, NULL);
+  return tp.tv_sec * 1000 + tp.tv_usec / 1000;
+}
+
+bool hasFiredEvent = false;
+long lastEventMs;
+bool canFireEvent() {
+  if (!hasFiredEvent)
+    return true;
+
+  long currentTime = getEpochMilliseconds();
+  return currentTime - lastEventMs > 1000; // it's been more than X milliseconds since last event
+}
+
+void fireEvent(int region) {
+    if (region == LEFT) {
+      std::cout << "go left" << std::endl;
+    } else if (region == RIGHT) {
+      std::cout << "go right!" << std::endl;
+    } else if (region == UP) {
+      std::cout << "go up!" << std::endl;
+    } else if (region == DOWN) {
+      std::cout << "go down!" << std::endl;
+    }
+
+  // save off for thresholding
+  lastEventMs = getEpochMilliseconds();
+  hasFiredEvent = true;
+}
+
+void findKeyEvent(std::deque<cv::Point2f> points)
+{
+  if (points.size() > POINT_SEARCH_RANGE) {
+    const int HALF_SEARCH_RANGE = POINT_SEARCH_RANGE / 2;
+    //cv::Point2f firstPoint = points[0];
+    //cv::Point2f midPoint = points[points.size() / 2];
+    //cv::Point2f lastPoint = points[points.size() - 1];
+
+    int firstRegion = region(points[points.size() - POINT_SEARCH_RANGE]);
+    int midRegion = region(points[points.size() - HALF_SEARCH_RANGE]);
+    int lastRegion = region(points[points.size() - 1]);
+
+    // process direction
+    if (midRegion != CENTER) {
+      if (canFireEvent()) {
+        fireEvent(midRegion);
+
+
+      }
+    }
+
+    /*
+    */
+    // region 
+  }
+  // for (int i = std::max(0, (int)(points.size() - MAX_QUEUED_POINTS)); i < points.size(); i++) {
+
+  // }
+}
+
+inline bool isInteger(const std::string & s)
+{
+   if(s.empty() || ((!isdigit(s[0])) && (s[0] != '-') && (s[0] != '+'))) return false;
+
+   char * p;
+   strtol(s.c_str(), &p, 10);
+
+   return (*p == 0);
+}
 
 /**
  * @function main
@@ -70,7 +169,17 @@ int main( int argc, const char** argv ) {
     while( true ) {
       frame = cvQueryFrame( capture );
 #else
-  cv::VideoCapture capture(0);
+  cv::VideoCapture capture;
+  if (argc < 2) {
+    std::cerr << "missing parameter for webcam or file" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  else if (isInteger(argv[1])) {
+    capture = cv::VideoCapture(atoi(argv[1]));
+  } else {
+    capture = cv::VideoCapture(argv[1]);
+  }
+  ("/tmp/hero.mp4");
   if( capture.isOpened() ) {
     while( true ) {
       capture.read(frame);
@@ -88,7 +197,7 @@ int main( int argc, const char** argv ) {
         break;
       }
 
-      imshow(main_window_name,debugImage);
+      //imshow(main_window_name,debugImage);
 
       int c = cv::waitKey(10);
       if( (char)c == 'c' ) { break; }
@@ -155,6 +264,44 @@ void findEyes(cv::Mat frame_gray, cv::Rect face) {
   // draw eye centers
   circle(debugFace, rightPupil, 3, 1234);
   circle(debugFace, leftPupil, 3, 1234);
+
+  leftRelativePoints.push_back(leftPupil);
+  rightRelativePoints.push_back(rightPupil);
+
+  if (leftRelativePoints.size() > 24) {
+    // these are magic ratios of where the pupils fall in the boxes
+    cv::Point2f eyeCenter(0.5 * (leftEyeRegion.x + rightEyeRegion.x + rightEyeRegion.width),
+                          leftLeftCornerRegion.y + 0.6 * leftLeftCornerRegion.height);
+
+    cv::Point2f currentRelativeCenter((leftPupil.x + rightPupil.x) * 0.5, 
+                              (leftPupil.y + rightPupil.y) * 0.5);
+
+    const float pixelsToNormal = leftLeftCornerRegion.height / 4.0f;
+    cv::Point2f currentNormalCenter((currentRelativeCenter.x - eyeCenter.x) / pixelsToNormal,
+                                    (currentRelativeCenter.y - eyeCenter.y) / pixelsToNormal);
+    //std::cout << currentNormalCenter << std::endl;                                    
+    // cv::Point2f leftNormalPoint = cv::Point2f((leftPupil.x - avgLeft.x) / EYE_TO_PUPIL,
+    //                                             (leftPupil.y - avgLeft.y) / EYE_TO_PUPIL);
+    normalPoints.push_back(currentNormalCenter);
+  //  std::cout << leftNormalPoint << std::endl;
+
+    findKeyEvent(normalPoints);
+
+    // make sure queues don't grow too big
+    while (leftRelativePoints.size() > MAX_QUEUED_POINTS) {
+      leftRelativePoints.pop_front();
+    }
+    while (rightRelativePoints.size() > MAX_QUEUED_POINTS) {
+      rightRelativePoints.pop_front();
+    }
+    while (normalPoints.size() > MAX_QUEUED_POINTS) {
+      normalPoints.pop_front();
+    }
+
+    // draw average left eye position
+    circle(debugFace, eyeCenter, 5, 1234, 2);
+    circle(debugFace, currentRelativeCenter, 3, 234);
+  }
 
   //-- Find Eye Corners
   if (kEnableEyeCorner) {
